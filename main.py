@@ -1140,7 +1140,18 @@ async def validate_device_token(token: str, bypass_cache: bool = False) -> Tuple
                 success = result.get("success", False)
                 message = result.get("message", "Unknown response")
                 # Optional: If the API returns specific access levels or device tokens, they can be handled here (added in 3.00+)
-                # device_token = result.get("device_token", None)
+                device_token = result.get("device_token", None)
+
+                # If a device_token was returned from the API, save it to config
+                if device_token:
+                    try:
+                        config = load_config()
+                        if config.get("device_token") != device_token:
+                            config["device_token"] = device_token
+                            save_config(config)
+                            log("Device token updated from API response", None, "CONFIG")
+                    except Exception as e:
+                        log(f"Failed to save device token from API: {e}", None, "ERROR")
 
                 # Cache the result
                 _token_validation_cache[token_stripped] = (success, message, time.time())
