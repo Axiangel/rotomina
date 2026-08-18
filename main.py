@@ -2676,13 +2676,26 @@ def download_apk(version_info: Dict) -> Path:
         log(f"Download failed: {str(e)}", None, "ERROR")
         raise
 
-def ensure_latest_apk_downloaded():
+def ensure_latest_apk_downloaded() -> Optional[str]:
+    """
+    Checks for and downloads the latest PoGo APK if not already present.
+
+    This function is synchronous and does blocking network I/O (version
+    check + potentially a full APK download), so callers must always invoke
+    it via run_in_executor - never directly on the event loop. It used to
+    call asyncio.create_task() internally, which only works on the event
+    loop's own thread; it now just returns the newly-downloaded version (or
+    None) so the async caller can schedule follow-up tasks itself.
+
+    Returns:
+        The version string if a new APK was downloaded, otherwise None.
+    """
     APK_DIR.mkdir(parents=True, exist_ok=True)
     versions = get_available_versions()
     
     if not versions.get("latest"):
         log("No latest version information available", None, "VERSION")
-        return
+        return None
         
     latest_version = versions["latest"]["version"]
     log(f"Latest available version: {latest_version}", None, "VERSION")
@@ -2691,10 +2704,24 @@ def ensure_latest_apk_downloaded():
     if not target_file.exists():
         log(f"New version {latest_version} not found locally, downloading", None, "UPDATE")
         download_apk(versions["latest"])
-        asyncio.create_task(notify_update_downloaded("Pokemon GO", latest_version))
-        asyncio.create_task(update_ui_with_new_version())
+        return latest_version
     else:
         log(f"Latest version {latest_version} already downloaded", None, "UPDATE")
+        return None
+
+async def run_apk_check_and_notify():
+    """
+    Async-safe entry point for the APK freshness check. Runs the blocking
+    ensure_latest_apk_downloaded() in a worker thread so it never stalls the
+    event loop, then schedules the notification/UI-refresh follow-ups (which
+    themselves need the event loop) if a new version was downloaded.
+    """
+    loop = asyncio.get_event_loop()
+    downloaded_version = await loop.run_in_executor(None, ensure_latest_apk_downloaded)
+    if downloaded_version:
+        asyncio.create_task(notify_update_downloaded("Pokemon GO", downloaded_version))
+        asyncio.create_task(update_ui_with_new_version())
+
 
 async def update_ui_with_new_version():
     """Updates all connected WebSocket clients with new version information"""
@@ -3477,8 +3504,8 @@ async def optimized_pogo_update_task():
             latest_version = versions["latest"]["version"]
             log(f"Latest available PoGO version: {latest_version}", None, "VERSION")
             
-            # Always download latest version
-            ensure_latest_apk_downloaded()
+            # Always download latest version (offloaded, see run_apk_check_and_notify)
+            await run_apk_check_and_notify()
             
             # Check if auto updates are enabled
             if not config.get("pogo_auto_update_enabled", True):
@@ -4412,8 +4439,8 @@ async def scheduled_update_task():
                     else:
                         log("Scheduled download failed", None, "ERROR")
                 
-                # PoGO Updates (existing function)
-                ensure_latest_apk_downloaded()
+                # PoGO Updates (offloaded, see run_apk_check_and_notify)
+                await run_apk_check_and_notify()
                 
                 # Mark this hour as completed for today
                 last_run_dates.add((today, current_hour))
@@ -6039,16 +6066,28 @@ async def get_status_data_with_tailwind_classes(apk_type: str = "google"):
     return data
 
 # FastAPI Initialization
+async def startup_apk_and_key_check():
+    """
+    Runs the initial ADB key sync and PoGo APK freshness check/download in
+    the background, off the event loop. These used to run synchronously
+    before lifespan() yielded, which meant Uvicorn could not finish its
+    startup event - and would refuse every connection outright - until both
+    completed. A slow/unreachable APK mirror could stall this for a long
+    time. Now the server becomes reachable immediately, and this check
+    happens in parallel.
+    """
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, sync_system_adb_key)
+    await run_apk_check_and_notify()
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Initialize ADB connection pool
     adb_pool.cleanup_connections()
     
-    # Sync ADB keys for authorization
-    sync_system_adb_key()
-    
-    # Initialize with latest APK
-    ensure_latest_apk_downloaded()
+    # Run ADB key sync + APK freshness check in the background instead of
+    # blocking startup (see startup_apk_and_key_check docstring)
+    asyncio.create_task(startup_apk_and_key_check())
     
     # Start background tasks
     asyncio.create_task(update_api_status())
