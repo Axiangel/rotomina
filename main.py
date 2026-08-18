@@ -5050,6 +5050,65 @@ async def install_pif_module(device_ip: str, pif_module_path=None):
     return await install_module_with_progress(device_ip, pif_module_path, "fork")
 
 # Optimized Module Update Task
+def _scan_devices_for_module_update(config: dict, new_version: str) -> list:
+    """
+    Blocking, serial scan of all configured devices to find which ones need
+    a PlayIntegrityFork module update. Involves multiple ADB/subprocess calls
+    per device (connection check + up to 4 version lookups), so this must
+    always be called via run_in_executor from async code - never inline on
+    the event loop, or it will stall the entire server (including startup)
+    for the duration of the whole scan.
+    """
+    devices_to_update = []
+
+    for device in config.get("devices", []):
+        device_id = device["ip"]
+
+        connected, error = check_adb_connection(device_id)
+        if not connected:
+            log(f"ADB not reachable, skipping update check: {error}", device_id, "UPDATE")
+            continue
+
+        version_info = version_manager.get_version_info(device_id, force_refresh=False)
+
+        if not version_info:
+            log("No version information available", device_id, "VERSION")
+            continue
+
+        installed_module = version_info.get("module_version", "N/A").strip()
+
+        # Skip devices without any module installed
+        if installed_module == "N/A":
+            log("No PlayIntegrity module found, skipping", device_id, "UPDATE")
+            continue
+
+        module_is_fork = "Fork" in installed_module
+
+        # Skip devices with Fix module - only update Fork devices
+        if not module_is_fork:
+            log("Has Fix module, skipping (only Fork devices are updated)", device_id, "UPDATE")
+            continue
+
+        # Extract and compare versions
+        version_match = re.search(r'Fork\s+v?(\d+(?:\.\d+)?.*|v?\d+)', installed_module)
+
+        if version_match:
+            current_version = version_match.group(1)
+            try:
+                current_tuple = parse_version(current_version)
+                new_tuple = parse_version(new_version)
+
+                if current_tuple < new_tuple:
+                    log(f"Update needed: {current_version} -> {new_version}", device_id, "UPDATE")
+                    devices_to_update.append(device_id)
+            except (ValueError, AttributeError):
+                devices_to_update.append(device_id)
+        else:
+            devices_to_update.append(device_id)
+
+    return devices_to_update
+
+
 async def optimized_module_update_task():
     """Checks and installs PlayIntegrityFork updates with reduced version queries"""
     while True:
@@ -5081,53 +5140,13 @@ async def optimized_module_update_task():
                 continue
 
             # Find devices needing update
-            devices_to_update = []
+            # Runs in a worker thread - see _scan_devices_for_module_update()
+            # docstring for why this must never run directly on the event loop.
             config_device_ips = {dev["ip"] for dev in config.get("devices", [])}
-            
-            for device in config.get("devices", []):
-                device_id = device["ip"]
-                
-                connected, error = check_adb_connection(device_id)
-                if not connected:
-                    log(f"ADB not reachable, skipping update check: {error}", device_id, "UPDATE")
-                    continue
-                    
-                version_info = version_manager.get_version_info(device_id, force_refresh=False)
-                
-                if not version_info:
-                    log("No version information available", device_id, "VERSION")
-                    continue
-                    
-                installed_module = version_info.get("module_version", "N/A").strip()
-                
-                # Skip devices without any module installed
-                if installed_module == "N/A":
-                    log("No PlayIntegrity module found, skipping", device_id, "UPDATE")
-                    continue
-                    
-                module_is_fork = "Fork" in installed_module
-                
-                # Skip devices with Fix module - only update Fork devices
-                if not module_is_fork:
-                    log("Has Fix module, skipping (only Fork devices are updated)", device_id, "UPDATE")
-                    continue
-                
-                # Extract and compare versions
-                version_match = re.search(r'Fork\s+v?(\d+(?:\.\d+)?.*|v?\d+)', installed_module)
-                    
-                if version_match:
-                    current_version = version_match.group(1)
-                    try:
-                        current_tuple = parse_version(current_version)
-                        new_tuple = parse_version(new_version)
-                        
-                        if current_tuple < new_tuple:
-                            log(f"Update needed: {current_version} -> {new_version}", device_id, "UPDATE")
-                            devices_to_update.append(device_id)
-                    except (ValueError, AttributeError):
-                        devices_to_update.append(device_id)
-                else:
-                    devices_to_update.append(device_id)
+            loop = asyncio.get_event_loop()
+            devices_to_update = await loop.run_in_executor(
+                None, _scan_devices_for_module_update, config, new_version
+            )
 
             update_count = len(devices_to_update)
             if update_count > 0:
