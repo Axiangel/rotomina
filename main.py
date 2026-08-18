@@ -3495,7 +3495,15 @@ async def optimized_pogo_update_task():
             config_device_ips = {dev["ip"] for dev in config.get("devices", [])}
             
             # Find devices needing update - OPTIMIZED: Uses VersionManager
-            devices_to_update = version_manager.get_devices_needing_pogo_update(latest_version)
+            # Runs in a worker thread: this call is blocking and serial (one
+            # ADB connection check per device, by design, to avoid hammering
+            # ADB/risking bans) and can take a long time for large fleets.
+            # Running it inline on the event loop would freeze all other
+            # requests and WebSocket updates for the whole duration.
+            loop = asyncio.get_event_loop()
+            devices_to_update = await loop.run_in_executor(
+                None, version_manager.get_devices_needing_pogo_update, latest_version
+            )
             
             # Filter devices not in config
             devices_to_update = [dev for dev in devices_to_update if dev in config_device_ips]
@@ -5748,7 +5756,10 @@ async def update_api_status():
                 
                 # Only check ADB connection if device is alive or for devices needing status check
                 if is_alive or not current_cache.get("adb_status", False):
-                    adb_status, adb_error = check_adb_connection(device_id)
+                    loop = asyncio.get_event_loop()
+                    adb_status, adb_error = await loop.run_in_executor(
+                        None, check_adb_connection, device_id
+                    )
                 else:
                     # Reuse last status if device is offline
                     adb_status = current_cache.get("adb_status", False)
@@ -6254,7 +6265,13 @@ async def status_page(request: Request, apk_type: str = "google"):
         devices.append({
             "display_name": details.get("display_name", ip.split(":")[0]),
             "ip": ip,
-            "status": check_adb_connection(ip)[0],
+            # Use the cached ADB status (kept fresh by the background monitoring
+            # task) instead of calling check_adb_connection() live here. That
+            # call is a blocking subprocess call with retries and can take
+            # 30s+ per device - running it inline in this async route handler
+            # blocked the entire event loop (all requests, WebSocket updates,
+            # background tasks) for every /status page load.
+            "status": status.get("adb_status", False),
             "is_alive": status["is_alive"],
             "pogo": details.get("pogo_version", "N/A"),
             "mitm": details.get("mitm_version", "N/A"),
