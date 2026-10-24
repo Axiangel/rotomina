@@ -1408,11 +1408,12 @@ def read_device_furtif_config(device_id: str) -> dict:
                 ("RotomIgnoreUnity", False),
                 ("RotomIgnoreDelays", False),
                 ("RotomUseRealPublicIp", False),
+                ("AttachOrSpawn", False),
             ]:
                 furtif_config[bool_key] = bool(parsed.get(bool_key, default))
 
             # Integer fields
-            for int_key, default in [("RotomDelayLoader", 3), ("RotomMaxWorkers", 60)]:
+            for int_key, default in [("RotomDelayLoader", 3), ("RotomMaxWorkers", 60), ("AttachDelay", 3)]:
                 try:
                     furtif_config[int_key] = int(parsed.get(int_key, default))
                 except (TypeError, ValueError):
@@ -1454,8 +1455,10 @@ def read_device_furtif_config(device_id: str) -> dict:
             furtif_config["RotomIgnoreUnity"] = _bool("RotomIgnoreUnity")
             furtif_config["RotomIgnoreDelays"] = _bool("RotomIgnoreDelays")
             furtif_config["RotomUseRealPublicIp"] = _bool("RotomUseRealPublicIp")
+            furtif_config["AttachOrSpawn"] = _bool("AttachOrSpawn")
             furtif_config["RotomDelayLoader"] = _int("RotomDelayLoader", 3)
             furtif_config["RotomMaxWorkers"] = _int("RotomMaxWorkers", 60)
+            furtif_config["AttachDelay"] = _int("AttachDelay", 3)
             furtif_config["DiscordData"] = _str_bare("DiscordData", "")
             furtif_config["RotomSecret"] = _str_quoted("RotomSecret", "")
             furtif_config["RotomURL"] = _str_quoted("RotomURL", "")
@@ -6524,6 +6527,8 @@ def save_device_rotom_config(
     RotomIgnoreDelays: str = Form("off"),
     RotomUseRealPublicIp: str = Form("off"),
     PackageName: str = Form("com.nianticlabs.pokemongo"),
+    DeviceMode: str = Form("spawn"),
+    AttachDelay: int = Form(3),
     restart_device: str = Form("off"),
 ):
     if redirect := require_login(request):
@@ -6532,8 +6537,12 @@ def save_device_rotom_config(
     # Server-side validation
     RotomDelayLoader = max(3, min(30, RotomDelayLoader))
     RotomMaxWorkers = max(1, min(250, RotomMaxWorkers))
+    AttachDelay = max(1, min(30, AttachDelay))
     if PackageName not in ("com.nianticlabs.pokemongo", "com.nianticlabs.pokemongo.ares"):
         PackageName = "com.nianticlabs.pokemongo"
+
+    # Determine AttachOrSpawn from DeviceMode
+    AttachOrSpawn = DeviceMode == "attach"
 
     config = load_config()
     target_device = None
@@ -6560,6 +6569,8 @@ def save_device_rotom_config(
         "RotomIgnoreDelays": RotomIgnoreDelays == "on",
         "RotomUseRealPublicIp": RotomUseRealPublicIp == "on",
         "PackageName": PackageName,
+        "AttachOrSpawn": AttachOrSpawn,
+        "AttachDelay": AttachDelay,
     }
 
     if "furtif_config" not in target_device:
