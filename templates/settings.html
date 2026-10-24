@@ -71,7 +71,7 @@
                             <span class="px-1.5 py-0.5 text-xs rounded-full bg-red-900/50 text-red-400">rotom off</span>
                             {% endif %}
                             {% if device.furtif_config and device.furtif_config.AttachOrSpawn %}
-                            <span class="px-1.5 py-0.5 text-xs rounded-full bg-blue-900/50 text-blue-400">Attach</span>
+                            <span class="px-1.5 py-0.5 text-xs rounded-full bg-blue-900/50 text-blue-400">Attach: {{ device.furtif_config.AttachDelay|default(3) }}s</span>
                             {% else %}
                             <span class="px-1.5 py-0.5 text-xs rounded-full bg-gray-700 text-gray-400">Spawn</span>
                             {% endif %}
@@ -216,7 +216,7 @@
                             </td>
                             <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-300">
                                 {% if device.furtif_config and device.furtif_config.AttachOrSpawn %}
-                                <span class="px-2 py-1 text-xs rounded-full bg-blue-900/50 text-blue-400">Attach</span>
+                                <span class="px-2 py-1 text-xs rounded-full bg-blue-900/50 text-blue-400">Attach: {{ device.furtif_config.AttachDelay|default(3) }}s</span>
                                 {% else %}
                                 <span class="px-2 py-1 text-xs rounded-full bg-gray-700 text-gray-400">Spawn</span>
                                 {% endif %}
