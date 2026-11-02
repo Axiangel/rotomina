@@ -1,0 +1,42 @@
+diff --git a/main.py b/main.py
+index 4c66935..26a7a84 100644
+--- a/main.py
++++ b/main.py
+@@ -5731,7 +5731,14 @@ async def update_api_status():
+                 
+                 # Find matching device data, with more robust matching
+                 device_data = None
+-                details = get_device_details(device_id)
++                # get_device_details() does blocking ADB/version lookups and a
++                # config save. Run it in a worker thread: called inline here it
++                # held the event loop for the whole device list on every cold
++                # start, so the web server could not answer until ALL devices
++                # had been checked.
++                details = await asyncio.get_event_loop().run_in_executor(
++                    None, get_device_details, device_id
++                )
+                 display_name = details.get("display_name", "").lower()
+                 
+                 # For network devices, extract IP for matching
+@@ -5970,7 +5977,9 @@ async def get_status_data(apk_type: str = "google"):
+     for dev in config["devices"]:
+         ip = dev["ip"]
+         status = device_status_cache.get(ip, {})
+-        details = get_device_details(ip)
++        details = await asyncio.get_event_loop().run_in_executor(
++            None, get_device_details, ip
++        )
+         current_runtime = status.get("runtime")
+         last_runtime = status.get("last_runtime")
+         runtime_formatted = format_runtime(current_runtime) if current_runtime is not None else "N/A"
+@@ -6316,7 +6325,9 @@ async def status_page(request: Request, apk_type: str = "google"):
+     for dev in config["devices"]:
+         ip = dev["ip"]
+         status = device_status_cache.get(ip, {})
+-        details = get_device_details(ip)
++        details = await asyncio.get_event_loop().run_in_executor(
++            None, get_device_details, ip
++        )
+         
+         default_status = {
+             "is_alive": False,
