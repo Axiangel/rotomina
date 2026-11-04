@@ -1413,7 +1413,7 @@ def read_device_furtif_config(device_id: str) -> dict:
                 furtif_config[bool_key] = bool(parsed.get(bool_key, default))
 
             # Integer fields
-            for int_key, default in [("RotomDelayLoader", 20), ("RotomMaxWorkers", 8), ("AttachDelay", 5)]:
+            for int_key, default in [("RotomDelayLoader", 3), ("RotomMaxWorkers", 60), ("AttachDelay", 3)]:
                 try:
                     furtif_config[int_key] = int(parsed.get(int_key, default))
                 except (TypeError, ValueError):
@@ -1456,9 +1456,9 @@ def read_device_furtif_config(device_id: str) -> dict:
             furtif_config["RotomIgnoreDelays"] = _bool("RotomIgnoreDelays")
             furtif_config["RotomUseRealPublicIp"] = _bool("RotomUseRealPublicIp")
             furtif_config["AttachOrSpawn"] = _bool("AttachOrSpawn")
-            furtif_config["RotomDelayLoader"] = _int("RotomDelayLoader", 20)
-            furtif_config["RotomMaxWorkers"] = _int("RotomMaxWorkers", 8)
-            furtif_config["AttachDelay"] = _int("AttachDelay", 5)
+            furtif_config["RotomDelayLoader"] = _int("RotomDelayLoader", 3)
+            furtif_config["RotomMaxWorkers"] = _int("RotomMaxWorkers", 60)
+            furtif_config["AttachDelay"] = _int("AttachDelay", 3)
             furtif_config["DiscordData"] = _str_bare("DiscordData", "")
             furtif_config["RotomSecret"] = _str_quoted("RotomSecret", "")
             furtif_config["RotomURL"] = _str_quoted("RotomURL", "")
@@ -5731,7 +5731,14 @@ async def update_api_status():
                 
                 # Find matching device data, with more robust matching
                 device_data = None
-                details = get_device_details(device_id)
+                # get_device_details() does blocking ADB/version lookups and a
+                # config save. Run it in a worker thread: called inline here it
+                # held the event loop for the whole device list on every cold
+                # start, so the web server could not answer until ALL devices
+                # had been checked.
+                details = await asyncio.get_event_loop().run_in_executor(
+                    None, get_device_details, device_id
+                )
                 display_name = details.get("display_name", "").lower()
                 
                 # For network devices, extract IP for matching
@@ -5970,7 +5977,9 @@ async def get_status_data(apk_type: str = "google"):
     for dev in config["devices"]:
         ip = dev["ip"]
         status = device_status_cache.get(ip, {})
-        details = get_device_details(ip)
+        details = await asyncio.get_event_loop().run_in_executor(
+            None, get_device_details, ip
+        )
         current_runtime = status.get("runtime")
         last_runtime = status.get("last_runtime")
         runtime_formatted = format_runtime(current_runtime) if current_runtime is not None else "N/A"
@@ -6316,7 +6325,9 @@ async def status_page(request: Request, apk_type: str = "google"):
     for dev in config["devices"]:
         ip = dev["ip"]
         status = device_status_cache.get(ip, {})
-        details = get_device_details(ip)
+        details = await asyncio.get_event_loop().run_in_executor(
+            None, get_device_details, ip
+        )
         
         default_status = {
             "is_alive": False,
@@ -6517,8 +6528,8 @@ def save_device_rotom_config(
     RotomSecret: str = Form(""),
     RotomURL: str = Form(""),
     RotomDeviceName: str = Form(""),
-    RotomDelayLoader: int = Form(20),
-    RotomMaxWorkers: int = Form(8),
+    RotomDelayLoader: int = Form(3),
+    RotomMaxWorkers: int = Form(60),
     RotomTryAutoStart: str = Form("off"),
     RotomRpcJailMode: str = Form("off"),
     RotomCheckPgoForced: str = Form("off"),
@@ -6528,7 +6539,7 @@ def save_device_rotom_config(
     RotomUseRealPublicIp: str = Form("off"),
     PackageName: str = Form("com.nianticlabs.pokemongo"),
     DeviceMode: str = Form("spawn"),
-    AttachDelay: int = Form(5),
+    AttachDelay: int = Form(3),
     restart_device: str = Form("off"),
 ):
     if redirect := require_login(request):
