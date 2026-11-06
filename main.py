@@ -5709,8 +5709,12 @@ async def update_api_status():
             # Redirects are deliberately NOT followed: following one would just
             # land on the login page and fail later with a confusing JSON error.
             api_headers = {}
-            cf_id = config.get("rotomApiCfClientId", "").strip()
-            cf_secret = config.get("rotomApiCfClientSecret", "").strip()
+            # Environment variables CF_ACCESS_CLIENT_ID / CF_ACCESS_CLIENT_SECRET
+            # take precedence: config.json is rewritten constantly by the app
+            # (and restored from .json.bak if it ever fails to parse), so keys
+            # added there by hand are easily lost.
+            cf_id = (os.environ.get("CF_ACCESS_CLIENT_ID") or config.get("rotomApiCfClientId", "")).strip()
+            cf_secret = (os.environ.get("CF_ACCESS_CLIENT_SECRET") or config.get("rotomApiCfClientSecret", "")).strip()
             if cf_id and cf_secret:
                 api_headers["CF-Access-Client-Id"] = cf_id
                 api_headers["CF-Access-Client-Secret"] = cf_secret
@@ -5728,7 +5732,10 @@ async def update_api_status():
                 if response.status_code != 200:
                     location = response.headers.get("location", "")
                     if "cloudflareaccess.com" in location:
-                        hint = " - blocked by Cloudflare Access login; configure rotomApiCfClientId/rotomApiCfClientSecret (service token) in config.json"
+                        if api_headers:
+                            hint = " - blocked by Cloudflare Access login even though a service token was sent (token rejected, or the Access policy for it is not Service Auth)"
+                        else:
+                            hint = " - blocked by Cloudflare Access login and NO service token is loaded (set CF_ACCESS_CLIENT_ID / CF_ACCESS_CLIENT_SECRET environment variables and restart)"
                     elif location:
                         hint = f" (redirect to {location})"
                     else:
