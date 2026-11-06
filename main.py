@@ -5701,17 +5701,39 @@ async def update_api_status():
                 await asyncio.sleep(60)
                 continue
                 
+            # If the Rotom API sits behind Cloudflare Access, a plain basic-auth
+            # request is answered with a 302 to the Cloudflare login page. A
+            # Cloudflare Access *service token* lets this server authenticate
+            # non-interactively. Optional config.json keys:
+            #   "rotomApiCfClientId", "rotomApiCfClientSecret"
+            # Redirects are deliberately NOT followed: following one would just
+            # land on the login page and fail later with a confusing JSON error.
+            api_headers = {}
+            cf_id = config.get("rotomApiCfClientId", "").strip()
+            cf_secret = config.get("rotomApiCfClientSecret", "").strip()
+            if cf_id and cf_secret:
+                api_headers["CF-Access-Client-Id"] = cf_id
+                api_headers["CF-Access-Client-Secret"] = cf_secret
+
             async with httpx.AsyncClient() as client:
                 auth = (config["rotomApiUser"], config["rotomApiPass"])
                 response = await client.get(
                     config["rotomApiUrl"], 
                     auth=auth, 
+                    headers=api_headers,
                     timeout=10
                 )
                 
                 # Check for successful response
                 if response.status_code != 200:
-                    log(f"API returned status code {response.status_code}", None, "API")
+                    location = response.headers.get("location", "")
+                    if "cloudflareaccess.com" in location:
+                        hint = " - blocked by Cloudflare Access login; configure rotomApiCfClientId/rotomApiCfClientSecret (service token) in config.json"
+                    elif location:
+                        hint = f" (redirect to {location})"
+                    else:
+                        hint = ""
+                    log(f"API returned status code {response.status_code}{hint}", None, "API")
                     await asyncio.sleep(60)
                     continue
                     
@@ -5731,7 +5753,14 @@ async def update_api_status():
                 
                 # Find matching device data, with more robust matching
                 device_data = None
-                details = get_device_details(device_id)
+                # get_device_details() does blocking ADB/version lookups and a
+                # config save. Run it in a worker thread: called inline here it
+                # held the event loop for the whole device list on every cold
+                # start, so the web server could not answer until ALL devices
+                # had been checked.
+                details = await asyncio.get_event_loop().run_in_executor(
+                    None, get_device_details, device_id
+                )
                 display_name = details.get("display_name", "").lower()
                 
                 # For network devices, extract IP for matching
@@ -5970,7 +5999,9 @@ async def get_status_data(apk_type: str = "google"):
     for dev in config["devices"]:
         ip = dev["ip"]
         status = device_status_cache.get(ip, {})
-        details = get_device_details(ip)
+        details = await asyncio.get_event_loop().run_in_executor(
+            None, get_device_details, ip
+        )
         current_runtime = status.get("runtime")
         last_runtime = status.get("last_runtime")
         runtime_formatted = format_runtime(current_runtime) if current_runtime is not None else "N/A"
@@ -6316,7 +6347,9 @@ async def status_page(request: Request, apk_type: str = "google"):
     for dev in config["devices"]:
         ip = dev["ip"]
         status = device_status_cache.get(ip, {})
-        details = get_device_details(ip)
+        details = await asyncio.get_event_loop().run_in_executor(
+            None, get_device_details, ip
+        )
         
         default_status = {
             "is_alive": False,
